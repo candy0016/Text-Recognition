@@ -11,39 +11,16 @@ class Trainer(object):
         super(Trainer, self).__init__()
         self.isTrain = opt.isTrain
         self.opt = opt
-        self.metric = 0
+        self.init_lr = opt.lr * opt.batch_size / 256
+        print('Initial learning rate: %.7f' % (self.init_lr))
 
-        self.net = models.Res18(opt).to(opt.device)
-        self.create_hook()
+        self.net = models.Siamese(opt).to(opt.device)
         
         if self.isTrain:
-            self.optimizer = torch.optim.Adam(self.net.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
-            self.scheduler = _get_scheduler(self.optimizer, opt)
-            self.criterionBCE = nn.BCELoss().to(opt.device)
-
-    def create_hook(self):
-        '''Create the method to extract middle layer output.
-        '''
-        self.activation = {}
-        def get_activation(name):
-            def hook(model, input, output):
-                self.activation[name] = output.detach()
-            return hook
-        
-        self.net.net.layer1.register_forward_hook(get_activation('layer1'))
-        self.net.net.layer2.register_forward_hook(get_activation('layer2'))
-        self.net.net.layer3.register_forward_hook(get_activation('layer3'))
-        self.net.net.layer4.register_forward_hook(get_activation('layer4'))
-
-    def get_hook(self):
-        '''
-        Return middle layer output.
-        Call this function after calling run().
-        '''
-        return self.activation['layer1'], \
-                self.activation['layer2'], \
-                self.activation['layer3'], \
-                self.activation['layer4']
+            optim_params = [{'params': self.net.encoder.parameters(), 'fix_lr': False},
+                            {'params': self.net.predictor.parameters(), 'fix_lr': True}]
+            self.optimizer = torch.optim.SGD(optim_params, self.init_lr, momentum=opt.momentum, weight_decay=opt.wd)
+            self.criterionCOS = models.Cosine_Loss().to(opt.device)
 
     def eval(self):
         self.net.eval()
@@ -58,24 +35,23 @@ class Trainer(object):
         '''
         if self.opt.isTrain:
             self.optimizer.zero_grad()
-            anc, label = data
-            self.anc = anc.to(self.opt.device)
-            self.label = label.to(self.opt.device)
-            self.predict = self.net(self.anc)
+            img1 = data[0].to(self.opt.device)
+            img2 = data[1].to(self.opt.device)
+            self.predict = self.net(img1, img2)
         else:
             predict = self.net(data)
             return predict
 
     def compute_loss(self):
-        self.loss_classify = self.criterionBCE(self.predict, self.label)
-        self.loss_classify.backward()
+        self.loss = self.criterionCOS(self.predict)
+        self.loss.backward()
         self.optimizer.step()
 
     def get_loss(self):
         """Return losses of current step.
         """
         dic = {}
-        dic['loss_classify'] = self.loss_classify.item()
+        dic['loss'] = self.loss.item()
         return dic
 
     def save(self, epoch, best=False):
@@ -118,43 +94,14 @@ class Trainer(object):
                 state_dict.pop('.'.join(keys))
         else:
             self.__patch_instance_norm_state_dict(state_dict, getattr(module, key), keys, i + 1)
-    
-    def update_learning_rate(self):
-        """Update learning rates for all the networks; called at the end of every epoch"""
-        old_lr = self.optimizer.param_groups[0]['lr']
-        if self.opt.lr_policy == 'plateau':
-            self.scheduler.step(self.metric)
-        else:
-            self.scheduler.step()
 
-        lr = self.optimizer.param_groups[0]['lr']
-        print('learning rate %.7f -> %.7f' % (old_lr, lr))
-
-
-def _get_scheduler(optimizer, opt):
-    """Return a learning rate scheduler
-
-    Parameters:
-        optimizer          -- the optimizer of the network
-        opt (option class) -- stores all the experiment flags; needs to be a subclass of BaseOptions.
-                              opt.lr_policy is the name of learning rate policy: linear | step | plateau | cosine
-
-    For 'linear', we keep the same learning rate for the first <opt.n_epochs> epochs
-    and linearly decay the rate to zero over the next <opt.n_epochs_decay> epochs.
-    For other schedulers (step, plateau, and cosine), we use the default PyTorch schedulers.
-    See https://pytorch.org/docs/stable/optim.html for more details.
-    """
-    if opt.lr_policy == 'linear':
-        def lambda_rule(epoch):
-            lr_l = 1.0 - max(0, epoch + opt.epoch_count - opt.n_epochs) / float(opt.n_epochs_decay + 1)
-            return lr_l
-        scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda_rule)
-    elif opt.lr_policy == 'step':
-        scheduler = lr_scheduler.StepLR(optimizer, step_size=opt.lr_decay_iters, gamma=0.1)
-    elif opt.lr_policy == 'plateau':
-        scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, threshold=0.01, patience=5)
-    elif opt.lr_policy == 'cosine':
-        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=opt.n_epochs, eta_min=0)
-    else:
-        return NotImplementedError('learning rate policy [%s] is not implemented', opt.lr_policy)
-    return scheduler
+    def update_learning_rate(self, epoch):
+        """Decay the learning rate based on schedule"""
+        cur_lr = self.init_lr * 0.5 * (1. + math.cos(math.pi * epoch / self.opt.n_epochs))
+        for param_group in self.optimizer.param_groups:
+            if 'fix_lr' in param_group and param_group['fix_lr']:
+                param_group['lr'] = self.init_lr
+            else:
+                param_group['lr'] = cur_lr
+                print('encoder learning rate: %.7f' % (cur_lr))
+        
