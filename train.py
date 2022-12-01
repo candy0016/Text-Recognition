@@ -4,7 +4,6 @@ import torch
 from datetime import datetime
 from tqdm import tqdm
 
-from trainer import Trainer
 from datasets import CustomDataset
 
 
@@ -17,8 +16,6 @@ def get_write_text(prefix, loss):
 
 
 def train(opt):
-    os.environ['CUDA_VISIBLE_DEVICES'] = opt.gpus_str
-
     print('Creating dataset...')
     mydataset = CustomDataset(opt)
     print('Dataset created.')
@@ -30,7 +27,7 @@ def train(opt):
 
     if opt.pretrained:
         model.load()
-
+        
     train_loader = torch.utils.data.DataLoader(
         mydataset, 
         batch_size=opt.batch_size, 
@@ -50,18 +47,18 @@ def train(opt):
             model.run(data)
             model.compute_loss()
             loss = model.get_loss()
-            s = 'Loss: %7.4f ' % (loss['loss_classify'])
+            s = 'Loss: %7.4f ' % (loss['loss'])
             pbar.set_description(desc + s)
 
         # Save training results
-        if loss['loss_classify'] < best:
-            best = loss['loss_classify']
+        if loss['loss'] < best:
+            best = loss['loss']
             model.save(epoch, best=True)
             print(f"Save best loss model at epoch {epoch}.")
         if epoch % opt.save_epoch == 0:
             model.save(epoch)
             print(f"Save model at epoch {epoch}.")
-        model.update_learning_rate()
+        model.update_learning_rate(epoch)
 
         f_log = open(opt.log_path, 'a')
         f_log.write(get_write_text(desc, loss))
@@ -76,10 +73,11 @@ def train(opt):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # System setting
+    parser.add_argument('--lincls', action='store_true', help='use data label to train linear classification after unsupervised training')
     parser.add_argument('--gpus_str', type=str, default='0', help='use which graphic card')
     parser.add_argument('--num_threads', default=0, type=int, help='# threads for loading data')
     # Dataset setting
-    parser.add_argument('--data_path', type=str, default='E:/MTL_FTP/ChengJungC/dataset/synth_char', 
+    parser.add_argument('--data_path', type=str, default='data_path.txt', 
                         help='to a txt list of folder or directly to the folder contain two sub-folder: img/ label')
     # Common training setting
     parser.add_argument('--input_size', type=int, default=64, help='input image size')
@@ -88,6 +86,7 @@ if __name__ == '__main__':
     parser.add_argument('--n_epochs_decay', type=int, default=100, help='number of epochs to linearly decay learning rate to zero')
     parser.add_argument('--epoch_count', type=int, default=1, help='the starting epoch count, we save the model by <epoch_count>, <epoch_count>+<save_latest_freq>, ...')
     # Optimizer setting
+    parser.add_argument('--ratio', type=float, default=0.1, help='determine the size of mask for image transformation')
     parser.add_argument('--beta1', type=float, default=0.5, help='momentum term of adam')
     parser.add_argument('--lr', type=float, default=0.05, help='initial learning rate for adam')
     parser.add_argument('--wd', default=1e-4, type=float, help='weight decay (default: 1e-4)')
@@ -101,7 +100,7 @@ if __name__ == '__main__':
     # Pretrained setting
     parser.add_argument('--pretrained', action='store_true', help='if specified, load pretrained weight before training')
     parser.add_argument('--weight_dir', type=str, default='checkpoints', help='folder path of weights')
-    parser.add_argument('--load_epoch', type=int, default='0', help='which epoch to load')
+    parser.add_argument('--load_epoch', type=str, default='0', help='which epoch to load')
     parser.add_argument('--res18_weight', type=str, default='resnet18-5c106cde.pth', help='path to resnet18 imagenet weights')
     # Save setting
     parser.add_argument('--save_dir', type=str, default='train_log', help='the folder path to save training results')
@@ -111,11 +110,19 @@ if __name__ == '__main__':
     opt.isTrain = True
     opt.device = 'cuda' if len(opt.gpus_str)>0 else 'cpu'
     opt.gpu_ids = opt.gpus_str.split(',') if len(opt.gpus_str)>0 else []
-    opt.epochs = opt.n_epochs + opt.n_epochs_decay
+    os.environ['CUDA_VISIBLE_DEVICES'] = opt.gpus_str
+    # opt.epochs = opt.n_epochs + opt.n_epochs_decay
+    opt.epochs = opt.n_epochs
 
     current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     opt.save_dir_model = os.path.join(opt.save_dir, current_time)
     os.makedirs(opt.save_dir_model)
     opt.log_path = os.path.join(opt.save_dir, current_time, 'loss_log.txt')
+
+    if opt.lincls:
+        from trainer_lincls import Trainer
+        opt.pretrained = True
+    else:
+        from trainer import Trainer
 
     train(opt)
