@@ -22,7 +22,7 @@ class CustomDataset(data.Dataset):
     def __init__(self, opt):
         super().__init__()
         self.opt = opt
-        self.trans = get_transform(opt.input_size, training=opt.isTrain)
+        self.trans = get_transform(opt, training=opt.isTrain)
 
         #Text Recognizer setting 
         self.CHARS = '0123456789ABCDEFGHJKLMNPQRSTUVWXYZ'
@@ -48,16 +48,18 @@ class CustomDataset(data.Dataset):
                     img_path = os.path.join(p, 'img', img_name)
                     self.data_list[label].append(img_path)
                     self.img_list.append({'path': img_path, 'label': label})
-
     
     def __getitem__(self, index):
         anchor = self.img_list[index]
-        anc_img = apply_trans(anchor['path'], self.trans)
-        label_num = self.CHAR2LABEL[anchor['label']]
-        anc_label = torch.zeros(self.num_class)
-        anc_label[label_num] = 1.0
-
-        return anc_img, anc_label
+        img1 = apply_trans(anchor['path'], self.trans)
+        if self.opt.lincls:
+            label_num = self.CHAR2LABEL[anchor['label']]
+            anc_label = torch.zeros(self.num_class)
+            anc_label[label_num] = 1.0
+            return img1, anc_label
+        else:
+            img2 = apply_trans(anchor['path'], self.trans)
+            return img1, img2
 
     def __len__(self):
         return len(self.img_list)
@@ -144,17 +146,18 @@ class GaussianBlur(object):
         return x
 
 
-def get_transform(input_size, method=Image.BICUBIC, training=False):
+def get_transform(opt, method=Image.BICUBIC, training=False):
     '''Transformation list for input.
     '''
     transform_list = []
     
-    transform_list.append(transforms.Lambda(lambda img: _scale(img, input_size)))
+    transform_list.append(transforms.Lambda(lambda img: _scale(img, opt.input_size)))
     transform_list.append(NewPad())
 
     if training:
-        transform_list.append(transforms.RandomPerspective(distortion_scale=0.5, p=0.6))
+        transform_list.append(transforms.RandomApply([transforms.Lambda(lambda img: _mask(img, opt.ratio))], p=0.3))
         transform_list.append(transforms.RandomApply([transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.6))
+        transform_list.append(transforms.RandomPerspective(distortion_scale=0.5, p=0.6))
         transform_list.append(transforms.RandomApply([GaussianBlur([.1, 2.])], p=0.3))
 
     transform_list.append(transforms.Grayscale(3))
