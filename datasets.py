@@ -22,7 +22,7 @@ class CustomDataset(data.Dataset):
     def __init__(self, opt):
         super().__init__()
         self.opt = opt
-        self.trans = get_transform(opt.input_size, training=opt.isTrain)
+        self.trans = get_transform(opt, training=opt.isTrain)
 
         #Text Recognizer setting 
         self.CHARS = '0123456789ABCDEFGHJKLMNPQRSTUVWXYZ'
@@ -30,8 +30,10 @@ class CustomDataset(data.Dataset):
         self.num_class = len(self.CHARS)
 
         self.data_list = {}  # A dict, {'label1(char)': [path1, path2, ...], 'label2': [...], ...}
+        self.stan_chars = {}
         for c in self.CHARS:
             self.data_list[c] = []
+            self.stan_chars[c] = []
         self.img_list = []  # A list of dicts, [{'path': img_path, 'label': label(char str)}, ...]
 
         path_list = check_path(opt.data_path)
@@ -49,15 +51,28 @@ class CustomDataset(data.Dataset):
                     self.data_list[label].append(img_path)
                     self.img_list.append({'path': img_path, 'label': label})
 
+        stan_path = os.listdir(opt.anchor_path)
+        for form in stan_path:
+            sub_path = os.path.join(opt.anchor_path, form)
+            files = os.listdir(sub_path)
+            for f in files:
+                file_path = os.path.join(sub_path, f)
+                nclass = f.split('.')[0]
+                self.stan_chars[nclass].append(file_path)
     
     def __getitem__(self, index):
-        anchor = self.img_list[index]
-        anc_img = apply_trans(anchor['path'], self.trans)
-        label_num = self.CHAR2LABEL[anchor['label']]
-        anc_label = torch.zeros(self.num_class)
-        anc_label[label_num] = 1.0
+        obj = self.img_list[index]
+        img1 = apply_trans(obj['path'], self.trans)
 
-        return anc_img, anc_label
+        lab = obj['label']
+        stan_p = self.stan_chars[lab][random.randint(0, 1)]
+        img2 = apply_trans(stan_p, self.trans)
+
+        label_idx = self.CHAR2LABEL[obj['label']]
+        label_tensor = torch.zeros(self.num_class)
+        label_tensor[label_idx] = 1.0
+
+        return img1, img2, label_tensor, label_idx
 
     def __len__(self):
         return len(self.img_list)
@@ -144,17 +159,18 @@ class GaussianBlur(object):
         return x
 
 
-def get_transform(input_size, method=Image.BICUBIC, training=False):
+def get_transform(opt, method=Image.BICUBIC, training=False):
     '''Transformation list for input.
     '''
     transform_list = []
     
-    transform_list.append(transforms.Lambda(lambda img: _scale(img, input_size)))
+    transform_list.append(transforms.Lambda(lambda img: _scale(img, opt.input_size)))
     transform_list.append(NewPad())
 
     if training:
-        transform_list.append(transforms.RandomPerspective(distortion_scale=0.5, p=0.6))
+        transform_list.append(transforms.RandomApply([transforms.Lambda(lambda img: _mask(img, opt.ratio))], p=0.3))
         transform_list.append(transforms.RandomApply([transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.6))
+        transform_list.append(transforms.RandomPerspective(distortion_scale=0.5, p=0.6))
         transform_list.append(transforms.RandomApply([GaussianBlur([.1, 2.])], p=0.3))
 
     transform_list.append(transforms.Grayscale(3))
